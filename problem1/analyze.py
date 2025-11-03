@@ -39,7 +39,23 @@ def extract_attention_weights(model, dataloader, device, num_samples=100):
 
     samples_collected = 0
 
+    def make_hook(attention_list):
+        def hook(module, input, output):
+            if output[1] is not None:
+            # output is (attention_output, attention_weights)
+                attention_list.append(output[1].detach().cpu())
+        return hook
+
+    for layer in model.encoder_layers:
+        layer.self_attn.register_forward_hook(make_hook(all_encoder_attentions))
+    for layer in model.decoder_layers:
+        layer.self_attn.register_forward_hook(make_hook(all_decoder_self_attentions))
+        layer.cross_attn.register_forward_hook(make_hook(all_decoder_cross_attentions))
+
     with torch.no_grad():
+
+
+        
         for batch in dataloader:
             if samples_collected >= num_samples:
                 break
@@ -51,27 +67,11 @@ def extract_attention_weights(model, dataloader, device, num_samples=100):
             # TODO: Modify model forward pass to return attention weights
             # This requires updating the model to store/return attention weights
 
-            # For now, we'll need to hook into the attention layers
-            encoder_attentions = []
-            decoder_self_attentions = []
-            decoder_cross_attentions = []
-
-            # Register hooks to capture attention weights
-            def make_hook(attention_list):
-                def hook(module, input, output):
-                    # output is (attention_output, attention_weights)
-                    attention_list.append(output[1].detach().cpu())
-                return hook
+            
 
             # TODO: Register hooks on attention layers
             # You'll need to access model.encoder_layers[i].self_attn
             # and model.decoder_layers[i].self_attn, cross_attn
-
-            for layer in model.encoder_layers:
-                layer.self_attn.register_forward_hook(make_hook(all_encoder_attentions))
-            for layer in model.decoder_layers:
-                layer.self_attn.register_forward_hook(make_hook(all_decoder_self_attentions))
-                layer.cross_attn.register_forward_hook(make_hook(all_decoder_cross_attentions))
 
             # Forward pass
             # TODO: Run model forward pass
@@ -296,10 +296,9 @@ def evaluate_model(model, dataloader, device):
             # TODO: Compare with targets
             # TODO: Count correct sequences
 
-            outputs = model(inputs, targets[:, :-1])[0]  
+            outputs = model(inputs, targets[:, :-1])  
             preds = outputs.argmax(dim=-1)
-            targets_seq = targets[:, 1:] 
-            correct += (preds == targets_seq).all(dim=1).sum().item()
+            correct += (preds == targets[:, 1:]).all(dim=1).sum().item()
             total += targets.size(0)
 
     return correct / total
@@ -326,6 +325,7 @@ def plot_head_importance(ablation_results, save_path):
 
     # TODO: Plot bars for each head
 
+    plt.bar(heads, drops, color='skyblue')
     plt.xlabel('Head')
     plt.ylabel('Accuracy Drop')
     plt.title('Head Importance')
@@ -386,7 +386,7 @@ def visualize_example_predictions(model, dataloader, device, output_dir, num_exa
 
             attentions = model(input_seq, target_seq.unsqueeze(0))
 
-            encoder_attn = attentions[0]
+            encoder_attn = attentions[0, :, :]
 
             plt.imshow(encoder_attn.cpu().numpy(), cmap='viridis')
             plt.colorbar()
@@ -451,6 +451,28 @@ def main():
     visualize_example_predictions(
         model, test_loader, args.device, output_dir, num_examples=5
     )
+
+    print("Saving attention heatmaps")
+
+    encoder_attn = attention_data['encoder_attention']   # list per layer
+    inputs = attention_data['inputs']
+    targets = attention_data['targets']
+
+    input_tokens = [str(x) for x in inputs[0]]
+    target_tokens = [str(x) for x in targets[0]]
+
+    for layer_idx, layer_attn in enumerate(encoder_attn[-10:]):
+        attn = layer_attn[0].numpy()   
+
+        save_file = output_dir / 'attention_patterns' / f'encoder_layer_{layer_idx}.png'
+        
+        visualize_attention_pattern(
+            attn,
+            input_tokens=input_tokens,
+            output_tokens=input_tokens,
+            title=f"Encoder Layer {layer_idx} Attention",
+            save_path=save_file
+        )
 
     print(f"\nAnalysis complete! Results saved to {output_dir}")
 
